@@ -312,3 +312,56 @@ return [
     'password_timeout' => 10800,
 
 ];
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use App\Models\Distributor;
+use Illuminate\Support\Facades\Auth;
+
+class profileController extends Controller
+{
+
+    public function profile()
+    {
+        $distributor = Auth()->guard('distributor')->user();
+        return view('Distributor.profile', compact('distributor'));
+    }
+    public function distributorprofileupdate(Request $r)
+    {
+        $distributor = Auth()->guard('distributor')->user();
+
+        $data = $r->validate([
+            'did' => 'required',
+            'name' => 'required',
+            'email' => 'required',
+            'phone' => 'required|numeric',
+            'pincode' => 'required|numeric',
+            'city' => 'required',
+            'address' => 'required',
+            'photo' => 'image|mimes:jpeg,png,jpg,gif,svg|max:2048',
+        ]);
+
+
+
+        $distributor = distributor::where('did', $r->did)->firstOrFail();
+
+        // Handle image upload
+        if ($r->hasFile('photo')) {
+            $imagePath = $r->file('photo')->store('Customer', 'public');
+            $distributor->photo = $imagePath;
+        }
+
+        // Update consumer details
+        $distributor->update([
+            'name' => $r->name,
+            'phone' => $r->phone,
+            'email' => $r->email,
+            'pincode' => $r->pincode,
+            'city' => $r->city,
+            'address' => $r->address,
+        ]);
+        return redirect()->route('distributordashboard')->with('profile', 'Profile updated successfully');
+    }
+}
