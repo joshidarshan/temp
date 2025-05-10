@@ -365,3 +365,4 @@ class profileController extends Controller
         return redirect()->route('distributordashboard')->with('profile', 'Profile updated successfully');
     }
 }
+laravel yield and section extend
