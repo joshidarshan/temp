@@ -1,0 +1,314 @@
+<?php
+
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use App\Models\customer;
+use App\Models\distributor;
+use App\Models\order;
+use Illuminate\Support\Facades\Hash;
+
+class customerloginController extends Controller
+{
+    public function checkcustomer_login(Request $r)
+    {
+        $credentials = $r->validate([
+            'email' => 'required|email',
+            'password' => 'required',
+        ]);
+
+        if (Auth::guard('customer')->attempt($credentials)) {
+            return redirect()->route('customerdashboard');
+        } else {
+            return redirect()->back()->withErrors(['Invalid Email or Password']);
+        }
+    }
+
+    public function userdashboard()
+    {
+        if (Auth::guard('customer')->check()) {
+            $customer = Auth::guard('customer')->user();
+            $totalorder = order::where('cid', $customer->cid)->count();
+            return view('Customer.dashboard', compact('customer', 'totalorder'));
+        } else {
+            return redirect()->route('Customer_login');
+        }
+    }
+
+    public function customerlogout()
+    {
+        Auth::guard('customer')->logout(); // Logout the customer guard
+        return redirect()->route('Customer_login'); // Redirect to the login page
+    }
+}
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use App\Models\Distributor;
+use App\Models\Customer;
+use App\Models\order;
+use Illuminate\Support\Facades\Mail;
+use App\Mail\confirmorder;
+use App\Mail\Deliveredorder;
+use Carbon\Carbon;
+
+class distributordashboardController extends Controller
+{
+    public function distributordashboard()
+    {
+        if (Auth::guard('distributor')->check()) {
+            $distributor = Auth::guard('distributor')->user();
+            $totalorder = order::where('did', $distributor->did)->count();
+            $pendingOrders = Order::where('did', $distributor->did)
+                ->where('status', '!=', 'Delivered')
+                ->count();
+            $delivered = order::where('did', $distributor->did)->where('status', 'Delivered')->count();
+
+            $customer = Customer::where('did', $distributor->did)->count();
+            $active = Customer::where('did', $distributor->did)->where('status', 'Active')->count();
+            $inactive = Customer::where('did', $distributor->did)->where('status', 'Inactive')->count();
+
+            $monthlyBookings = Order::where('did', $distributor->did)
+                ->selectRaw('MONTH(created_at) as month, COUNT(*) as bookings')
+                ->groupBy('month')
+                ->orderBy('month')
+                ->get();
+
+            // Prepare data for the chart
+            $months = [];
+            $bookingsData = [];
+            for ($i = 1; $i <= 12; $i++) {
+                $monthData = $monthlyBookings->where('month', $i)->first();
+                $months[] = Carbon::create()->month($i)->format('F'); // Get the month name
+                $bookingsData[] = $monthData ? $monthData->bookings : 0; // If no data, set 0
+            }
+
+            return view('Distributor.dashboard', compact('distributor', 'totalorder',  'delivered', 'pendingOrders', 'months', 'bookingsData', 'customer', 'active', 'inactive'));
+        } else {
+            return redirect()->route('Customer_login');
+        }
+    }
+
+    public function distributorlogout()
+    {
+        Auth::guard('distributor')->logout(); // Logout the customer guard
+        return redirect()->route('Customer_login'); // Redirect to the login page
+    }
+
+    public function viewcustomer()
+    {
+        $distributor = Auth::guard('distributor')->user();
+        $customers = Customer::where('did', $distributor->did)->get();
+        return view('Distributor.viewcustomer', compact('customers', 'distributor'));
+    }
+    public function editdetail(Request $r)
+    {
+        $customer = Customer::where("cid", "$r->cid")->first();
+        return view('Distributor.edit', compact('customer'));
+    }
+    public function getDistributors(Request $request)
+    {
+        $district = $request->query('district');
+        $distributors = Distributor::where('district', $district)->get(['did', 'name']);
+        return response()->json($distributors);
+    }
+
+    public function customerupdate(Request $r)
+    {
+        // $r->validate([
+        //     'cid' => 'required|exists:Customer,cid', // Ensure CID exists in consumers table
+        //     'name' => 'required|string|max:255',
+        //     'phone' => 'required|digits:10',
+        //     'email' => 'required|email|unique:Customer,email,' . $r->cid . ',cid',
+        //     'dob' => 'required|date',
+        //     'gender' => 'required|in:Male,Female,Other',
+        //     'pincode' => 'required|digits:6',
+        //     'district' => 'required|string',
+        //     'status' => 'required|in:Active,Inactive',
+        //     'did' => 'required|exists:distributors,did', // Ensure Distributor exists
+        //     'photo' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
+        // ]);
+
+        $Customer = Customer::where('cid', $r->cid)->firstOrFail();
+
+        // Handle image upload
+        if ($r->hasFile('photo')) {
+            $imagePath = $r->file('photo')->store('Customer', 'public');
+            $Customer->photo = $imagePath;
+        }
+
+        // Update consumer details
+        $Customer->update([
+            'name' => $r->name,
+            'phone' => $r->phone,
+            'email' => $r->email,
+            'dob' => $r->dob,
+            'gander' => $r->gander,
+            'pincode' => $r->pincode,
+            'district' => $r->district,
+            'status' => $r->status,
+            'did' => $r->did,
+        ]);
+
+        return redirect()->route('customerdetail');
+    }
+
+    public function customerdeactivate(Request $r)
+    {
+        $customer = Customer::where('cid', $r->cid)->firstOrFail();
+        $customer->status = 'Inactive';
+        $customer->save();
+
+        return redirect()->route('customerdetail');
+    }
+    public function neworder()
+    {
+        $did = Auth::guard('distributor')->user()->did;
+        $orders = order::where('did', $did)->whereIn('status', ['pending'])->orderBy('oid', 'desc')
+            ->get();
+        return view('Distributor.neworders', compact('orders'));
+    }
+    public function updateorderstatus(Request $r)
+    {
+        order::where('oid', $r->oid)->update(['status' => $r->status]);
+        $order = order::where('oid', $r->oid)->first();
+        Mail::to($order->email)->send(new confirmorder($order));
+        return redirect()->route('neworder');
+    }
+    public function changeorderstatus()
+    {
+        $did = Auth::guard('distributor')->user()->did;
+        $orderstatus = order::where('did', $did)->wherenotIn('status', ['pending', 'Delivered'])->orderBy('oid', 'desc')
+            ->get();
+        return view('Distributor.status', compact('orderstatus'));
+    }
+
+    public function status(Request $r)
+    {
+        order::where('oid', $r->oid)->update(['status' => $r->status]);
+        if ($r->status == 'Delivered') {
+            order::where('oid', $r->oid)->update(['delivery_date' => now()]);
+            $order = order::where('oid', $r->oid)->first();
+            Mail::to($order->email)->send(new Deliveredorder($order));
+        }
+        return redirect()->route('changeorderstatus');
+    }
+    public function orderhistory()
+    {
+        $did = Auth::guard('distributor')->user()->did;
+        $orderhistory = order::where('did', $did)->whereIn('status', ['Delivered'])->orderBy('oid', 'desc')
+            ->get();
+        $cancelled = order::where('did', $did)->whereIn('status', ['Cancelled'])->orderBy('oid', 'desc')
+            ->get();
+        return view('Distributor.history', compact('orderhistory', 'cancelled'));
+    }
+    public function orderrecipt(Request $r)
+    {
+        $order = order::where('oid', $r->oid)->first();
+        $distributor = Distributor::where('did', $order->did)->first();
+        return view('Distributor.recipt', compact('order', 'distributor'));
+    }
+    public function updateprice(Request $r)
+    {
+        $r->validate([
+            'updateprice' => 'required|numeric',
+        ]);
+        $distributor = Auth::guard('distributor')->user();
+        distributor::where('did', $distributor->did)->update([
+            'price' => $r->updateprice,
+        ]);
+        return redirect()->route('distributordashboard')->with('price', 'Price updated successfully');
+    }
+}
+ if (Auth::guard('customer')->check()) {
+            return $next($request);
+        } else {
+            return redirect()->route('Customer_login');
+        }<?php
+
+return [
+
+    'defaults' => [
+        'guard' => 'web',
+        'passwords' => 'users',
+    ],
+
+    'guards' => [
+        'web' => [
+            'driver' => 'session',
+            'provider' => 'users',
+        ],
+
+        'customer' => [
+            'driver' => 'session',
+            'provider' => 'customers',
+        ],
+
+        'distributor' => [
+            'driver' => 'session',
+            'provider' => 'distributors',
+        ],
+        'admin' => [
+            'driver' => 'session',
+            'provider' => 'admins',
+        ],
+    ],
+
+    'providers' => [
+        'users' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\User::class,
+        ],
+
+        'customers' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\Customer::class,
+        ],
+
+        'distributors' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\distributor::class,
+        ],
+        'admins' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\admin::class,
+        ],
+    ],
+
+    'passwords' => [
+        'users' => [
+            'provider' => 'users',
+            'table' => 'password_resets',
+            'expire' => 60,
+            'throttle' => 60,
+        ],
+
+        'customers' => [
+            'provider' => 'customers',
+            'table' => 'password_resets',
+            'expire' => 60,
+            'throttle' => 60,
+        ],
+
+        'distributors' => [
+            'provider' => 'distributors',
+            'table' => 'password_resets',
+            'expire' => 60,
+            'throttle' => 60,
+        ],
+        'admins' => [
+            'provider' => 'distributors',
+            'table' => 'password_resets',
+            'expire' => 60,
+            'throttle' => 60,
+        ],
+    ],
+
+    'password_timeout' => 10800,
+
+];
